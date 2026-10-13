@@ -25,10 +25,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           ref: main
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: '3.12'
       - name: Check saved searches
@@ -44,13 +44,13 @@ jobs:
             git commit -m 'Update property feed [skip ci]'
             git push origin HEAD:main
           fi
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6.0.0
+      - uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: public
       - name: Publish website
         id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5.0.1
       - name: Report source failure after publishing preserved results
         if: steps.collect.outcome == 'failure'
         run: |

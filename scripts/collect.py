@@ -147,7 +147,8 @@ def collect(config, state, previous, loader=fetch):
         report = {"id": sid, "name": name, "status": "ok", "checkedAt": now, "url": search["url"]}
         found = {}
         try:
-            index, visited = 0, set()
+            index, visited, source_ids = 0, set(), set()
+            advertised_count = 0
             max_pages = max(1, min(42, int(config.get("maxPagesPerSearch", 8))))
             complete = False
             for page in range(max_pages):
@@ -155,7 +156,11 @@ def collect(config, state, previous, loader=fetch):
                     raise ValueError("Unexpected pagination loop")
                 visited.add(index)
                 data = loader(search_url(search["url"], index))
+                count_text = str(data["resultCount"]).replace(",", "")
+                if count_text.isdigit():
+                    advertised_count = max(advertised_count, int(count_text))
                 for raw in data["properties"]:
+                    source_ids.add(str(raw["id"]))
                     p = normalise(raw)
                     if matches(p, {**filters, **search.get("filters", {})}):
                         found[p["id"]] = p
@@ -169,6 +174,11 @@ def collect(config, state, previous, loader=fetch):
             if not complete:
                 report["status"] = "partial"
                 output["warnings"].append(f"{name}: page limit reached; results may be incomplete. Narrow the search or raise the page limit.")
+                failed += 1
+            elif advertised_count > len(source_ids):
+                complete = False
+                report["status"] = "partial"
+                output["warnings"].append(f"{name}: the source advertised more listings than it returned. Results may be capped; narrow the search.")
                 failed += 1
             # Only a complete search can remove membership from old matches.
             if complete:
