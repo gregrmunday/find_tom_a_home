@@ -46,7 +46,7 @@ Collection failures preserve the last available results and publish warnings. Pa
 
 Rightmove has no documented open consumer search API. This collector uses ordinary public HTML requests with a named user agent, timeouts and pauses, without proxies, login automation or anti-bot bypass. [Rightmove's terms](https://www.rightmove.co.uk/c/terms-of-use/) restrict automated access, so collection may be blocked and authorised access or another feed may be needed for long-term operation. No Rightmove images are downloaded or embedded. Floor-plan badges link users to the listing rather than loading its assets.
 
-Hourly checks run at minute 17. [GitHub's scheduler](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule) may run late or miss runs, so detection can take about an hour plus scheduling and publication delays. This cannot guarantee being first. The browser reloads the JSON feed every five minutes while visible; its Refresh button reloads the feed rather than requesting another source check. Outbound email/push alerts have not been configured.
+Hourly checks run at minute 17. [GitHub's scheduler](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule) may run late or miss runs, so detection can take about an hour plus scheduling and publication delays. This cannot guarantee being first. The browser reloads the JSON feed every five minutes while visible; Reload results reloads the feed with visible loading/completion feedback and a 12-second timeout. Run search opens the owner’s GitHub Actions workflow, where Run workflow requests a fresh collection. Outbound email/push alerts have not been configured.
 
 ## Local use and publishing
 

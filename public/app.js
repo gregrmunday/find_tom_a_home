@@ -89,13 +89,18 @@ function selectHome(id,zoom){
  if(map){if(zoom&&Number.isFinite(p.lat)&&Number.isFinite(p.lng))map.setView([p.lat,p.lng],15,{animate:false});renderPins();markers.get(id)?.openPopup();}
 }
 function fitMap(){if(map&&circle)map.fitBounds(circle.getBounds(),{padding:[22,22],maxZoom:14});}
-async function load(){
+async function load(manual=false){
  if(busy)return;busy=true;$('refresh-button').disabled=true;
- try{const response=await fetch(`data/listings.json?t=${Date.now()}`,{cache:'no-store'});if(!response.ok)throw Error('Feed unavailable');const next=await response.json();if(!Array.isArray(next.properties))throw Error('Invalid feed');feed=next;render();}
- catch(_){$('notice').hidden=false;$('notice').textContent='Feed refresh failed; try again shortly.';if(!feed)empty('Feed unavailable','Try refreshing shortly.');}
- finally{busy=false;$('refresh-button').disabled=false;}
+ $('refresh-button').textContent='Reloading…';
+ if(manual){$('reload-feedback').hidden=false;$('reload-feedback').textContent='Loading the latest published results…';}
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),12000);const previous=feed?.checkedAt;
+ try{const response=await fetch(`data/listings.json?t=${Date.now()}`,{cache:'no-store',signal:controller.signal});if(!response.ok)throw Error('Feed unavailable');const next=await response.json();if(!Array.isArray(next.properties))throw Error('Invalid feed');feed=next;render();
+  if(manual){const time=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});$('reload-feedback').textContent=`Results reloaded at ${time}.${next.checkedAt===previous?' No newer collection yet—use Run search for a fresh check.':''}`;}
+ }
+ catch(_){$('notice').hidden=false;$('notice').textContent='Results could not reload. Please try again.';if(manual)$('reload-feedback').textContent='Reload failed. Your previous results are still shown.';if(!feed)empty('Feed unavailable','Try refreshing shortly.');}
+ finally{clearTimeout(timeout);busy=false;$('refresh-button').disabled=false;$('refresh-button').textContent='Reload results ↻';resizePanels();}
 }
-$('refresh-button').addEventListener('click',load);$('sort').addEventListener('change',render);$('source-filter').addEventListener('change',render);$('fit-map').addEventListener('click',fitMap);
+$('refresh-button').addEventListener('click',()=>load(true));$('sort').addEventListener('change',render);$('source-filter').addEventListener('change',render);$('fit-map').addEventListener('click',fitMap);
 document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.view)));
 $('property-list').addEventListener('click',event=>{
  const button=event.target.closest('[data-save]');
