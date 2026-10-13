@@ -1,0 +1,23 @@
+{
+  "enabled": false,
+  "title": "Your London search",
+  "summary": "Your requirements will appear here once we set up your search.",
+  "intervalMinutes": 60,
+  "retentionDays": 90,
+  "maxPagesPerSearch": 8,
+  "searches": [],
+  "filters": {
+    "minPrice": null,
+    "maxPrice": null,
+    "minBedrooms": null,
+    "maxBedrooms": null,
+    "propertyTypes": [],
+    "includeAnyKeywords": [],
+    "includeAllKeywords": [],
+    "excludeKeywords": [],
+    "excludeAuction": false,
+    "excludeSharedOwnership": false,
+    "excludeUnderOffer": true,
+    "bounds": null
+  }
+}

@@ -1,0 +1,58 @@
+name: Check homes and publish
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['README.md', 'docs/**']
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: home-search-and-pages
+  cancel-in-progress: false
+
+jobs:
+  update-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check saved searches
+        id: collect
+        continue-on-error: true
+        run: python scripts/collect.py
+      - name: Save results and deduplication history
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/data/listings.json state/seen.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update property feed [skip ci]'
+            git push origin HEAD:main
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - name: Publish website
+        id: deploy
+        uses: actions/deploy-pages@v4
+      - name: Report source failure after publishing preserved results
+        if: steps.collect.outcome == 'failure'
+        run: |
+          echo '::error::At least one search failed or is incomplete. The website shows the last available results and update status.'
+          exit 1
