@@ -1,9 +1,9 @@
 'use strict';
 const $=id=>document.getElementById(id), DAY=86400000;
 const money=new Intl.NumberFormat('en-GB',{style:'currency',currency:'GBP',maximumFractionDigits:0});
-const names={rightmove:'Rightmove',openrent:'OpenRent',onthemarket:'OnTheMarket',zoopla:'Zoopla'};
-const short={rightmove:'RM',openrent:'OpenRent',onthemarket:'OTM',zoopla:'Zoopla'};
-const hosts=new Set(['www.rightmove.co.uk','www.openrent.co.uk','www.onthemarket.com','www.zoopla.co.uk']);
+const names={rightmove:'Rightmove',openrent:'OpenRent',onthemarket:'OnTheMarket'};
+const short={rightmove:'RM',openrent:'OpenRent',onthemarket:'OTM'};
+const hosts=new Set(['www.rightmove.co.uk','www.openrent.co.uk','www.onthemarket.com']);
 let feed=null,view='all',map=null,layer=null,circle=null,current=[],selected=null,busy=false;
 const markers=new Map();let saved=new Set();
 try{const data=JSON.parse(localStorage.getItem('tom-home-shortlist')||'[]');if(Array.isArray(data))saved=new Set(data);}catch(_){}
@@ -54,8 +54,8 @@ function renderMap(){
  if(!map){
   const c=feed.radius||{lat:51.46829,lng:-.0895,miles:1};
   map=L.map('map',{scrollWheelZoom:true,zoomControl:true}).setView([c.lat,c.lng],13);
-  const basemap=L.tileLayer('https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{maxZoom:20,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'}).addTo(map);
-  let tileFailures=0;basemap.on('tileerror',()=>{if(++tileFailures===4){map.removeLayer(basemap);L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(map);}});
+  const basemap=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(map);
+  let tileFailures=0;basemap.on('tileerror',()=>{if(++tileFailures===4)$('map-count').textContent='Map tiles unavailable';});
   circle=L.circle([c.lat,c.lng],{radius:c.miles*1609.344,color:'#549c91',weight:1.3,dashArray:'4 5',fillColor:'#2e9b85',fillOpacity:.035}).addTo(map);
   if(feed.boundaryLines?.length)L.polyline(feed.boundaryLines,{color:'#868da8',weight:2.5,opacity:.7,interactive:false}).addTo(map);
   L.marker([c.lat,c.lng],{icon:L.divIcon({html:'<div class="station-marker">▤</div>',iconSize:[22,22],iconAnchor:[11,11]}),title:'Denmark Hill Station'}).bindTooltip('Denmark Hill',{permanent:true,direction:'right',offset:[8,0],className:'station-tooltip'}).addTo(map);

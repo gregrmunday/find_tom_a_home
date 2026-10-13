@@ -8,8 +8,8 @@ from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-NAMES={'rightmove':'Rightmove','openrent':'OpenRent','onthemarket':'OnTheMarket','zoopla':'Zoopla'}
-HOSTS={'rightmove':'www.rightmove.co.uk','openrent':'www.openrent.co.uk','onthemarket':'www.onthemarket.com','zoopla':'www.zoopla.co.uk'}
+NAMES={'rightmove':'Rightmove','openrent':'OpenRent','onthemarket':'OnTheMarket'}
+HOSTS={'rightmove':'www.rightmove.co.uk','openrent':'www.openrent.co.uk','onthemarket':'www.onthemarket.com'}
 
 
 def text(value):
@@ -146,30 +146,12 @@ def parse_otm_details(document,pid):
     return {'id':str(pid),'description':data.get('description',''),'features':[f['feature'] for f in data.get('features') or [] if f.get('feature')],'floorplanCount':len(data.get('floorplans') or [])+len(data.get('externalFloorplans') or []),'nearestStations':stations,'location':{'latitude':location.get('lat'),'longitude':location.get('lon'),'pinType':'SOURCE_POINT'},'status':{'published':not data.get('retracted')},'address':data.get('displayAddress'),'agentName':agent,'lettings':{},'propertyType':data.get('humanisedPropertyType'),'openrentReference':str(ref) if ref and 'openrent' in agent.lower() and str(ref).isdigit() else None}
 
 
-def parse_zoopla_search(document,url):
-    """Support structured Next.js listings if access becomes available; never parse a challenge as zero results."""
-    data=next_data(document);properties=[];seen=set()
-    def visit(value):
-        if isinstance(value,dict):
-            pid=value.get('listing_id') or value.get('listingId')
-            address=value.get('display_address') or value.get('displayAddress')
-            if pid and address and str(pid) not in seen:
-                seen.add(str(pid));p=record('zoopla',pid,address,pcm(value.get('price') or value.get('priceLabel')),value.get('num_bedrooms',value.get('bedrooms')),value.get('num_bathrooms',value.get('bathrooms')),value.get('property_type',''),value.get('latitude'),value.get('longitude'),f'https://www.zoopla.co.uk/to-rent/details/{pid}/');p['description']=text(value.get('description'));p['summary']=p['description'];p['publishedAt']=value.get('first_published_date') or value.get('publishedAt');properties.append(p)
-            else:
-                for child in value.values():visit(child)
-        elif isinstance(value,list):
-            for child in value:visit(child)
-    visit(data['props']['pageProps'])
-    if not properties:raise ValueError('Zoopla listing schema unavailable; access or schema needs attention')
-    return {'properties':properties,'total':None,'next':None,'coverageCount':len(properties),'incomplete':True}
-
-
 def search_page(source,url):
-    return {'openrent':parse_openrent_search,'onthemarket':parse_otm_search,'zoopla':parse_zoopla_search}[source](download(url,source),url)
+    return {'openrent':parse_openrent_search,'onthemarket':parse_otm_search}[source](download(url,source),url)
 
 
 def listing_details(source,pid,url):
     document=download(url,source)
     if source=='openrent':return parse_openrent_details(document,pid)
     if source=='onthemarket':return parse_otm_details(document,pid)
-    raise ValueError('Zoopla full details require accessible structured data')
+    raise ValueError('Unsupported listing source')

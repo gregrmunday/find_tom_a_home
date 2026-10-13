@@ -30,7 +30,7 @@
       "id": "openrent-denmark",
       "source": "openrent",
       "name": "OpenRent",
-      "url": "https://www.openrent.co.uk/properties-to-rent/denmark-hill?latn=51.46829&lngn=-0.0895&within=2&prices_max=2100&bedrooms_min=1&bedrooms_max=2&isLive=true",
+      "url": "https://www.openrent.co.uk/properties-to-rent/denmark-hill?latn=51.46829&lngn=-0.0895&within=2",
       "filters": {
         "minBedrooms": 1,
         "maxBedrooms": 2,
@@ -42,18 +42,6 @@
       "source": "onthemarket",
       "name": "OnTheMarket",
       "url": "https://www.onthemarket.com/to-rent/property/denmark-hill/?max-price=2100&min-bedrooms=1&max-bedrooms=2&radius=1&sort-field=update_date",
-      "filters": {
-        "minBedrooms": 1,
-        "maxBedrooms": 2,
-        "maxPrice": 2100
-      }
-    },
-    {
-      "id": "zoopla-denmark",
-      "source": "zoopla",
-      "name": "Zoopla",
-      "optional": true,
-      "url": "https://www.zoopla.co.uk/to-rent/property/station/rail/denmark-hill/?radius=1&beds_min=1&beds_max=2&price_max=2100&price_frequency=per_month&results_sort=newest_listings",
       "filters": {
         "minBedrooms": 1,
         "maxBedrooms": 2,
