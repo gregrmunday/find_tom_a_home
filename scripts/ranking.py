@@ -14,7 +14,7 @@ REFURBISHMENT = [
 def listed_hours(prop, now=None):
     now=now or datetime.now(timezone.utc)
     try:
-        date=datetime.fromisoformat(prop['publishedAt'].replace('Z','+00:00'))
+        date=datetime.fromisoformat((prop.get('publishedAt') or '').replace('Z','+00:00'))
         if date.tzinfo is None: return float('inf')
         return max(0,(now-date).total_seconds()/3600)
     except (ValueError,KeyError,TypeError):
@@ -55,7 +55,7 @@ def rank(prop,settings,now=None):
     elif prop.get('bedrooms')==1:prop['fitReasons'].append(f"£{price-target:,.0f} above target")
     else:prop['fitReasons'].append(f"£{settings.get('twoBedMaximum',2100)-price:,.0f} below 2-bed ceiling")
     try:
-        published=datetime.fromisoformat(prop['publishedAt'].replace('Z','+00:00')).timestamp()
+        published=datetime.fromisoformat((prop.get('publishedAt') or '').replace('Z','+00:00')).timestamp()
     except (ValueError,KeyError,TypeError):
         published=0
     return (-prop['fitScore'],-published,prop.get('distanceMiles',float('inf')),prop['id'])

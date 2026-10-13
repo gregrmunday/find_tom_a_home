@@ -18,13 +18,16 @@ def miles_between(lat1, lng1, lat2, lng2):
 
 
 def parse_osm(documents):
-    nodes, ways = {}, {}
+    nodes, ways, stations = {}, {}, {}
     for document in documents:
         root = ET.fromstring(document)
         if root.tag != "osm":
             raise ValueError("Invalid OpenStreetMap extract")
         for node in root.findall("node"):
             nodes[node.attrib["id"]] = (float(node.attrib["lat"]), float(node.attrib["lon"]))
+            tags={tag.attrib['k']:tag.attrib['v'] for tag in node.findall('tag')}
+            if tags.get('railway') in ['station','halt'] and tags.get('name'):
+                stations[node.attrib['id']]={'name':tags['name'],'lat':float(node.attrib['lat']),'lng':float(node.attrib['lon'])}
         for way in root.findall("way"):
             tags = {tag.attrib["k"]: tag.attrib["v"] for tag in way.findall("tag")}
             if tags.get("railway") in ("rail", "light_rail", "subway") or (tags.get("highway") and tags.get("name")):
@@ -40,7 +43,7 @@ def parse_osm(documents):
             streets.append({"name": tags["name"], "points": points})
     if not rails or not streets:
         raise ValueError("Extract is missing rails or streets")
-    return {"rails": rails, "streets": streets}
+    return {"rails": rails, "streets": streets, "stations":list(stations.values())}
 
 
 def download_map(bbox):
@@ -75,6 +78,7 @@ def point_segment_distance(point, a, b):
 class RailScreen:
     def __init__(self, data, centre, settings):
         self.centre, self.settings = centre, settings
+        self.stations = data.get('stations',[])
         self.x_scale = math.cos(math.radians(centre["lat"])) * math.pi*EARTH_RADIUS/180
         self.y_scale = math.pi*EARTH_RADIUS/180
         self.rails = []
@@ -150,3 +154,29 @@ class RailScreen:
         if prop.get("pinApproximate"):
             return "unverified","Approximate listing pin needs a street/rail check"
         return "screened","Street screened against mapped railway tracks"
+
+
+class SouthBoundary:
+    def __init__(self,data,settings):
+        names={settings['streetName'],*settings.get('extensions',[])}
+        self.segments=[];self.settings=settings
+        for street in data['streets']:
+            if street['name'] in names:
+                self.segments.extend(zip(street['points'],street['points'][1:]))
+        if not self.segments:raise ValueError('Road boundary geometry missing')
+    def check(self,prop):
+        lat,lng=prop.get('lat'),prop.get('lng')
+        if lat is None or lng is None:return 'unverified','Road-side location unavailable'
+        intersections=[]
+        for a,b in self.segments:
+            if min(a[1],b[1])<=lng<=max(a[1],b[1]) and a[1]!=b[1]:
+                intersections.append(a[0]+(lng-a[1])/(b[1]-a[1])*(b[0]-a[0]))
+        if not intersections:return 'unverified','Road boundary does not cover the listing longitude'
+        # Split carriageways are represented by the mean road centreline at this longitude.
+        boundary=sum(intersections)/len(intersections)
+        clearance=(boundary-lat)*math.pi*EARTH_RADIUS/180
+        prop['southOfRoadMetres']=round(clearance)
+        margin=self.settings.get('uncertaintyMetres',15)
+        if clearance < -margin:return 'excluded','North of Peckham Road and its continuation'
+        if clearance<=margin:return 'unverified','Listing pin is too close to the road boundary'
+        return 'screened','South of Peckham Road'

@@ -1,12 +1,12 @@
 # Find Tom a Home
 
-A small rental radar at **https://gregrmunday.github.io/find_tom_a_home/**.
+A compact personal rental dashboard at **https://gregrmunday.github.io/find_tom_a_home/**.
 
-Plain HTML, CSS and JavaScript, Leaflet for the map, Python standard library for collection, GitHub Actions for hourly checks and GitHub Pages for hosting. No build system, application server, database, paid API or package installation. The website only reads the published JSON feed; it never requests Rightmove pages.
+Plain HTML, CSS and JavaScript, Leaflet for the map, Python standard library for collection, GitHub Actions for hourly checks and GitHub Pages for hosting. No build system, application server, database, paid API or package installation. The website reads only the published JSON feed. Collectors run on GitHub Actions.
 
 ## Configured criteria
 
-- Within exactly 1 mile of Denmark Hill Station, London (Rightmove `STATION^2714`). Use Rightmove's unrounded station distance where present, otherwise great-circle distance from its station map point (51.46829, -0.0895). One mile is 1609.344 metres. This is straight-line distance, not walking distance.
+- South of Peckham Road **and** within exactly 1 mile of Denmark Hill Station, London (Rightmove `STATION^2714`). Use Rightmove's unrounded station distance where present, otherwise great-circle distance from its station map point (51.46829, -0.0895). One mile is 1609.344 metres. This is straight-line distance, not walking distance.
 - Exactly one bedroom up to £2,000 pcm, with £1,800 or less preferred; exactly two bedrooms up to £2,100 pcm.
 - A floor plan must be present in the listing's floor-plan section.
 - Exclude student accommodation, flat/house shares, shared kitchens/bathrooms and retirement housing using the property type and full description. A normal self-contained apartment saying students or sharers are welcome is not itself student accommodation or a room share.
@@ -14,7 +14,9 @@ Plain HTML, CSS and JavaScript, Leaflet for the map, Python standard library for
 - Railway proximity: exclude listing pins within 50 metres of mapped active tracks, and entire named streets with at least 50 metres running parallel beside tracks within 50 metres. The parallel test avoids excluding a road merely because it crosses a railway. These thresholds are configurable interpretations of adjacency, not a user-specified distance.
 - Approximate pins, uncertain street names and failed detail checks go under **Needs checking**, outside the recommendations and match counts. This is a screening tool, not a guarantee about railway noise or exact property boundaries.
 
-`config/searches.json` holds the saved one-bedroom and two-bedroom searches, prices, radius, enrichment and railway settings. Results combine with OR and deduplicate by Rightmove ID. Each source uses newest-first search order, excludes let-agreed results and fetches all accessible pages subject to the configured limit. Price-per-week listings use the advertised PCM amount if present, or annualised weekly rent (weekly × 52 ÷ 12), so ceilings operate on monthly rent.
+The northern boundary follows mapped Peckham Road, its western continuation along Camberwell Church Street and Camberwell New Road, and Peckham High Street to the east. Latitude is interpolated along the actual road geometry at each pin longitude; it is not a fixed-latitude cutoff. Pins within 15 metres of the road centreline are held for review. Geometry outside the known road coverage is also held for review.
+
+`config/searches.json` holds the saved searches, prices, radius, road boundary, enrichment and railway settings. Results combine with OR and deduplicate by Rightmove ID. Each source uses newest-first search order, excludes let-agreed results and fetches all accessible pages subject to the configured limit. Price-per-week listings use the advertised PCM amount if present, or annualised weekly rent (weekly × 52 ÷ 12), so ceilings operate on monthly rent.
 
 ## Ranking and welcome summary
 
@@ -28,7 +30,7 @@ Within a tier, completed refurbishment/renovation wording receives a boost; fres
 
 Descriptions are read in full, including key features. Badges reflect the advertiser's claims, not an inspection of the property. Planned or required work is not treated as a completed refurbishment. The listing date is separate from the time the tracker discovered it: a first collection does not pretend all existing matches were newly listed, and a price reduction does not reset listing age. Initial matches can appear in the 24-hour summary if the source says they were actually published within 24 hours.
 
-Views include Best matches, 24 hours, 3 days, Shortlist and Needs checking. The map marks Denmark Hill and draws the 1-mile radius. The shortlist stays in the current browser, including unverified homes explicitly labelled as such. Fictional rental examples are available through the preview toggle and clearly labelled.
+Views include Matches, 24h, 3d, Saved and Needs checking, with a source filter and sorting. Dense rows show rent, bedrooms, age, station distance, refurbishment and source links; descriptions expand on demand. The map uses CARTO Positron tiles, numbered pins matching result rows, separate one-/two-bedroom colours, selected-home highlighting and collision offsets with connectors to reported positions. Denmark Hill, the 1-mile circle and the northern road boundary remain visible. The shortlist stays in this browser, and saved IDs survive merged adverts. Marketing copy and fictional previews were removed.
 
 ## Collection and caching
 
@@ -56,3 +58,15 @@ python3 -m http.server 8000 --directory public
 Open http://localhost:8000. There are no packages to install. A live collection needs network access.
 
 The GitHub Pages source is GitHub Actions. `.github/workflows/update-and-deploy.yml` collects, commits the feed and state, and uploads only `public/`. A shared concurrency group serialises runs. Feed commits use `[skip ci]` to avoid recursion. An incomplete collector run still publishes preserved data and warnings, then marks the workflow failed so GitHub can notify the owner. Hourly status commits keep the repository active. Fonts and Leaflet load externally, with fallback fonts and property results available if those services fail.
+
+## Additional sources and duplicate adverts
+
+`scripts/sources.py` adds OpenRent, OnTheMarket and a Zoopla adapter slot. Rightmove, OpenRent and OnTheMarket public-page reads have been exercised successfully. Zoopla currently returns HTTP 403 / a browser-verification challenge for both its search and detail pages. No challenge bypass or disguised browser request is used. Zoopla is configured as an optional source: the website reports **blocked**, its last results would be retained, and other sources keep updating. A blocked optional source does not generate hourly failed-workflow emails. It is not reported as an empty or successful search. Zoopla's structured-page parser remains unverified against live accessible HTML and needs accessible authorised data before it can supply listings reliably; the developer portal discusses licensed listings access at https://developers.zoopla.co.uk/.
+
+OpenRent provides search arrays with exact first-listed timestamps, monthly rents, live/let status, rooms/studios and non-student availability. Its distance parameter is kilometres: we fetch a 2 km circle around the station coordinates and apply the exact 1-mile and road-side screens locally. Pagination follows live adverts; inactive listings and room shares are excluded. Many OpenRent photos are unlabelled, so their floor plans cannot be confirmed automatically. Those homes remain under Needs checking unless a labelled plan is found or a matching advert on another source confirms the requirements.
+
+OnTheMarket uses public Next.js search and property data, with full descriptions, floor-plan sections and reported coordinates. Its station distances are rounded, so map-based station geometry is used for precise station screening on sources without unrounded distances. Exact timestamps are often absent: only explicit Added today/yesterday or calendar dates become day-precision dates (marked approximately in the interface); broad Added < 7 days labels are not promoted into the 24-hour tier. Reduced dates never create new-listing dates. A redirect to a homepage is rejected rather than interpreted as zero results.
+
+`scripts/deduplicate.py` groups matching adverts using explicit OpenRent references, addresses, flat/house numbers, close coordinates and strongly similar full descriptions. Different flat numbers are protected. Ambiguous adverts are not merged solely because they have the same rent or street. Every merged home keeps its source links and aliases, with a stable identity stored in `state/identities.json`. A screened advert can establish a merged home's eligibility while another advert lacks a labelled plan. The earliest known publication date is retained to prevent a new portal advert making an older home look new. The feed records how many duplicate adverts were merged and per-source health. Automatic deduplication cannot identify all hidden-address adverts with certainty; the method favours preserving distinct homes over collapsing a building's different flats.
+
+CARTO basemap attribution is visible on the map alongside OpenStreetMap. If its tile service fails, the map falls back to ordinary OpenStreetMap tiles. Frontend assets remain plain static files, with no framework or build step.

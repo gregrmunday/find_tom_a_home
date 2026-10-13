@@ -27,17 +27,23 @@ def apply_details(prop,details,clean):
     prop['description']=clean(details.get('description'))
     prop['features']=[clean(v) for v in details.get('features',[]) if isinstance(v,str)]
     prop['floorplanCount']=details['floorplanCount']
-    prop['hasFloorplan']=details['floorplanCount']>0
-    prop['nearestStations']=[{'name':clean(s.get('name')),'distanceMiles':float(s['distance']) if s.get('unit')=='miles' else float(s['distance'])/1.609344} for s in details.get('nearestStations',[]) if isinstance(s.get('distance'),(int,float)) and s.get('unit') in ['miles','km']]
+    prop['hasFloorplan']=details['floorplanCount']>0 if details['floorplanCount'] is not None else None
+    prop['nearestStations']=[{'name':clean(s.get('name')),'distanceMiles':float(s['distance']) if s.get('unit')=='miles' else float(s['distance'])/1.609344,'rounded':bool(s.get('rounded'))} for s in details.get('nearestStations',[]) if isinstance(s.get('distance'),(int,float)) and s.get('unit') in ['miles','km']]
     location=details.get('location',{})
     if isinstance(location.get('latitude'),(float,int)) and isinstance(location.get('longitude'),(float,int)):
         prop['lat'],prop['lng']=location['latitude'],location['longitude']
-    prop['pinApproximate']=bool(location.get('circleRadiusOnMap')) or location.get('pinType') not in ['ACCURATE_POINT']
+    prop['pinApproximate']=bool(location.get('circleRadiusOnMap')) or location.get('pinType') not in ['ACCURATE_POINT','SOURCE_POINT']
+    prop['locationPrecision']='reported' if location.get('pinType')=='SOURCE_POINT' else 'approximate' if prop['pinApproximate'] else 'source-accurate'
+    for key in ['address','agentName','openrentReference','postcode']:
+        if details.get(key):prop[key]=clean(details[key])
+    if 'openrent' in prop.get('agentName','').lower():
+        reference=re.search(r'Property Reference\s*:\s*(\d+)',prop['description'],re.I)
+        if reference:prop['openrentReference']=reference[1]
     prop['letType']=clean((details.get('lettings') or {}).get('letType'))
     return (details.get('status') or {}).get('published',True) and not (details.get('status') or {}).get('archived',False)
 
 
-def geography_allowed(prop,config,rail_screen):
+def geography_allowed(prop,config,rail_screen,boundary=None):
     centre=config.get('radius')
     if centre:
         if prop.get('lat') is None or prop.get('lng') is None:
@@ -45,16 +51,22 @@ def geography_allowed(prop,config,rail_screen):
         distance=miles_between(centre['lat'],centre['lng'],prop['lat'],prop['lng'])
         # Prefer Rightmove's own unrounded station distance when available.
         station=next((s for s in prop.get('nearestStations',[]) if s['name'].casefold()==centre['name'].casefold()),None)
-        if station:distance=station['distanceMiles']
+        if station and not station.get('rounded'):distance=station['distanceMiles']
         prop['distanceMiles']=distance
         prop['distanceSource']='Rightmove station distance' if station else 'Great-circle distance from Rightmove station centre'
         if distance>centre['miles']:
             return 'excluded','Outside the 1-mile radius'
+        if boundary:
+            status,reason=boundary.check(prop)
+            if status!='screened':return status,reason
         if prop.get('pinApproximate'):
             return 'unverified','Approximate map pin: radius and street need confirmation'
     settings=config.get('railway',{})
     if settings.get('enabled'):
         stations=prop.get('nearestStations',[])
+        if prop.get('source','rightmove')!='rightmove' and rail_screen and rail_screen.stations:
+            stations=[{'name':s['name'],'distanceMiles':miles_between(prop['lat'],prop['lng'],s['lat'],s['lng'])} for s in rail_screen.stations]
+            prop['stationDistanceSource']='Mapped station positions'
         if not stations:
             return 'unverified','Rightmove station distances unavailable'
         nearest=min(stations,key=lambda s:s['distanceMiles'])

@@ -44,12 +44,18 @@ def parse_details(document):
     if not isinstance(property_data, dict) or not property_data.get("id") or "nearestStations" not in property_data:
         raise ValueError("Unexpected property details format")
     data = property_data
+    customer=data.get('customer') or {}
+    agent=customer.get('companyName') or customer.get('brandTradingName') or customer.get('branchDisplayName') or customer.get('branchName') or ''
+    description=(data.get('text') or {}).get('description','')
+    reference=re.search(r'Property Reference\s*:\s*(\d+)',description,re.I) if 'openrent' in agent.lower() else None
     return {
         "id": str(data["id"]), "description": (data.get("text") or {}).get("description", ""),
         "features": data.get("keyFeatures", []), "floorplanCount": len(data.get("floorplans") or []),
         "nearestStations": data.get("nearestStations") or [], "location": data.get("location") or {},
         "tags": data.get("tags") or [], "lettings": data.get("lettings") or {},
         "status": data.get("status") or {}, "propertyType": data.get("propertySubType", ""),
+        "agentName":agent,"openrentReference":reference[1] if reference else None,
+        "postcode":' '.join(filter(None,[(data.get('address') or {}).get('outcode'),(data.get('address') or {}).get('incode')])),
     }
 
 

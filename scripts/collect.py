@@ -15,11 +15,14 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 from enrich import fetch_details
-from geography import RailScreen, download_map, miles_between
+from geography import RailScreen, SouthBoundary, download_map, miles_between
 from ranking import rank
 from screening import accommodation_allowed, apply_details, geography_allowed
+from sources import search_page, listing_details, NAMES
+from deduplicate import merge_homes
 
 ROOT = Path(__file__).resolve().parents[1]
 USER_AGENT = "FindTomAHome/1.0 (+https://gregrmunday.github.io/find_tom_a_home/)"
@@ -103,13 +106,18 @@ def normalise(raw):
         "floorplanCount": raw.get("numberOfFloorplans", 0), "hasFloorplan": bool(raw.get("numberOfFloorplans")),
         "sourceUpdatedAt": raw.get("updateDate") or update.get("listingUpdateDate"),
         "description": "", "pinApproximate": False,
+        "source":"rightmove","sourceId":property_id,
+        "agentName":(raw.get('customer') or {}).get('brandTradingName') or (raw.get('customer') or {}).get('branchDisplayName',''),
     }
 
 
 def matches(p, filters):
-    if filters.get("requireFloorplan") and not p.get("hasFloorplan"):
+    if filters.get("requireFloorplan") and p.get("hasFloorplan") is False:
         return False
     if not accommodation_allowed(p, filters):
+        return False
+    budgets=filters.get('bedroomBudgets',{})
+    if budgets and (str(p.get('bedrooms')) not in budgets or p.get('price') is None or p['price']>budgets[str(p['bedrooms'])]):
         return False
     for field, lower, upper in [("price", "minPrice", "maxPrice"), ("bedrooms", "minBedrooms", "maxBedrooms")]:
         value = p.get(field)
@@ -140,7 +148,7 @@ def matches(p, filters):
     return True
 
 
-def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, details=None, rail_screen=None):
+def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, details=None, rail_screen=None,boundary=None,identities=None,external_loader=search_page,external_details=listing_details):
     now = stamp()
     output = {
         "schemaVersion": 1, "status": "awaiting_configuration", "checkedAt": now,
@@ -149,15 +157,19 @@ def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, 
         "searchTitle": config.get("title", "Your London search"),
         "searchSummary": config.get("summary", ""), "searches": [], "warnings": [], "properties": [], "pendingProperties": [],
         "radius": config.get("radius"), "railwaySettings": config.get("railway"), "ranking": config.get("ranking"),
+        "southOf":config.get('southOf'),"boundaryLines":[[list(a),list(b)] for a,b in boundary.segments] if boundary else [],
     }
     if not config.get("enabled") or not config.get("searches"):
         return output, state, False
     state.setdefault("properties", {})
     state.setdefault("searches", {})
+    for existing in state['properties'].values():
+        existing.setdefault('source','rightmove');existing.setdefault('sourceId',existing['id'])
     ids = [s["id"] for s in config["searches"]]
     if len(ids) != len(set(ids)):
         raise ValueError("Each saved search needs a unique ID")
     failed = 0
+    incomplete_coverage = False
     filters = config.get("filters", {})
     details = details if details is not None else {}
     requests = 0
@@ -165,32 +177,37 @@ def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, 
     enrichment = config.get("enrichment", {})
     for search in config["searches"]:
         sid, name = search["id"], search["name"]
-        signature = hashlib.sha256(json.dumps([search["url"], filters, search.get("filters", {}), config.get("radius"), config.get("railway")], sort_keys=True).encode()).hexdigest()
+        source=search.get('source','rightmove')
+        signature = hashlib.sha256(json.dumps([search["url"], filters, search.get("filters", {}), config.get("radius"), config.get("railway"),config.get('southOf')], sort_keys=True).encode()).hexdigest()
         old_search = state["searches"].get(sid, {})
         baseline = old_search.get("signature") != signature
-        report = {"id": sid, "name": name, "status": "ok", "checkedAt": now, "url": search["url"]}
+        report = {"id": sid, "name": name, "source":source,"platform":NAMES[source],"status": "ok", "checkedAt": now, "url": search["url"]}
         found = {}
         try:
             index, visited, source_ids = 0, set(), set()
             advertised_count = 0
+            page_url=search['url'];coverage_count=0
             max_pages = max(1, min(42, int(config.get("maxPagesPerSearch", 8))))
             complete = False
             for page in range(max_pages):
                 if index in visited:
                     raise ValueError("Unexpected pagination loop")
                 visited.add(index)
-                data = loader(search_url(search["url"], index))
-                count_text = str(data["resultCount"]).replace(",", "")
+                data = loader(search_url(search["url"], index)) if source=='rightmove' else external_loader(source,page_url)
+                count_text = str(data.get('resultCount',data.get('total',''))).replace(",", "")
+                coverage_count+=data.get('coverageCount',0)
                 if count_text.isdigit():
                     advertised_count = max(advertised_count, int(count_text))
                 for raw in data["properties"]:
                     source_ids.add(str(raw["id"]))
-                    p = normalise(raw)
+                    p = normalise(raw) if source=='rightmove' else dict(raw)
                     search_filters = {**filters, **search.get("filters", {})}
                     if not matches(p, search_filters):
                         continue
                     centre = config.get("radius")
                     if centre and p["lat"] is not None and miles_between(centre['lat'],centre['lng'],p['lat'],p['lng'])>centre['miles']+.02:
+                        continue
+                    if boundary and p.get('lat') is not None and not p.get('pinApproximate') and boundary.check(p)[0]=='excluded':
                         continue
                     if enrichment.get('enabled'):
                         cached = details.get(p['id'])
@@ -200,7 +217,7 @@ def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, 
                                 if requests>=enrichment.get('maxRequestsPerRun',80) or time.monotonic()-enrichment_started>480:
                                     raise ValueError('Detail request limit reached')
                                 requests+=1
-                                detail=detail_loader(p['id'])
+                                detail=detail_loader(p['id']) if source=='rightmove' else external_details(source,p['sourceId'],p['url'])
                                 details[p['id']]={'checkedAt':now,'sourceUpdatedAt':p['sourceUpdatedAt'],'data':detail}
                                 cached=details[p['id']]
                                 time.sleep(.5)
@@ -208,9 +225,12 @@ def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, 
                                 continue
                             if not p['description']:
                                 raise ValueError('Full description missing')
-                            status,reason=geography_allowed(p,config,rail_screen)
+                            status,reason=geography_allowed(p,config,rail_screen,boundary)
                             if status=='excluded':
                                 continue
+                            if p.get('hasFloorplan') is None:
+                                reason='Floor plan is not identified by this source'+('; '+reason if status=='unverified' else '')
+                                status='unverified'
                             p['verificationStatus']=status
                             p['verificationReason']=reason
                         except Exception as error:
@@ -224,18 +244,19 @@ def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, 
                     else:
                         p['verificationStatus']='screened'
                     found[p["id"]] = p
-                nxt = (data.get("pagination") or {}).get("next")
-                if nxt is None or nxt == "" or int(nxt) <= index:
+                nxt = (data.get("pagination") or {}).get("next") if source=='rightmove' else data.get('next')
+                if nxt is None or nxt == "" or (source=='rightmove' and int(nxt) <= index):
                     complete = True
                     break
-                index = int(nxt)
+                if source=='rightmove':index=int(nxt)
+                else:page_url=nxt;index+=1
                 if page + 1 < max_pages:
                     time.sleep(2)
             if not complete:
                 report["status"] = "partial"
                 output["warnings"].append(f"{name}: page limit reached; results may be incomplete. Narrow the search or raise the page limit.")
                 failed += 1
-            elif advertised_count > len(source_ids):
+            elif advertised_count > (len(source_ids) if source=='rightmove' else coverage_count) or data.get('incomplete'):
                 complete = False
                 report["status"] = "partial"
                 output["warnings"].append(f"{name}: the source advertised more listings than it returned. Results may be capped; narrow the search.")
@@ -246,6 +267,8 @@ def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, 
                     existing.get("sourceIds", {}).pop(sid, None)
             for pid, p in found.items():
                 old = state["properties"].get(pid)
+                if not p.get('publishedAt') and old and old.get('publishedAt'):
+                    p['publishedAt']=old['publishedAt'];p['datePrecision']=old.get('datePrecision','timestamp')
                 p["firstSeenAt"] = old["firstSeenAt"] if old else now
                 p["baseline"] = old.get("baseline", False) if old else baseline
                 p["lastSeenAt"] = now
@@ -256,13 +279,15 @@ def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, 
                 state["searches"][sid] = {"signature": signature, "lastSuccessfulCheckAt": now}
             report["matched"] = len(found)
         except Exception as error:
-            failed += 1
-            report["status"] = "error"
+            blocked=isinstance(error,PermissionError) or isinstance(error,HTTPError) and error.code in [401,403,429]
+            report["status"] = "blocked" if blocked else "error"
+            incomplete_coverage=True
+            if not search.get('optional'):failed+=1
             # Do not expose URLs, credentials or response bodies in the public feed.
-            output["warnings"].append(f"{name}: check failed ({type(error).__name__}). Previous results are preserved; new homes may be missing.")
+            output["warnings"].append(f"{NAMES[source]}: {'automated access blocked' if blocked else 'check failed'}. Previous results retained.")
             print(f"Search {sid}: {type(error).__name__}: {error}", file=sys.stderr)
         output["searches"].append(report)
-    output["status"] = "ok" if failed == 0 else "error" if all(s["status"] == "error" for s in output["searches"]) else "partial"
+    output["status"] = "ok" if failed == 0 and not incomplete_coverage else "error" if all(s["status"] in ['error','blocked'] for s in output["searches"]) else "partial"
     if failed == 0:
         output["lastSuccessfulCheckAt"] = now
     cutoff = (datetime.now(timezone.utc) - timedelta(days=config.get("retentionDays", 90))).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -271,10 +296,24 @@ def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, 
         sources = {sid: name for sid, name in p.get("sourceIds", {}).items() if sid in ids}
         if sources:
             record={**{k: v for k, v in p.items() if k != "sourceIds"}, "sourceNames": list(sources.values())}
+            if boundary:
+                boundary_status,boundary_reason=boundary.check(record)
+                if boundary_status=='excluded':continue
+                if boundary_status=='unverified':record['verificationStatus']='unverified';record['verificationReason']=boundary_reason
             destination='properties' if p.get('verificationStatus')=='screened' else 'pendingProperties'
             output[destination].append(record)
     for group in ['properties','pendingProperties']:
         output[group].sort(key=lambda p:rank(p,config.get('ranking',{})))
+    homes,merged=merge_homes(output['properties']+output['pendingProperties'],identities if identities is not None else {},config.get('ranking',{}))
+    output['properties']=[p for p in homes if p.get('verificationStatus')=='screened']
+    output['pendingProperties']=[p for p in homes if p.get('verificationStatus')!='screened']
+    output['duplicatesMerged']=merged
+    health={}
+    priority={'ok':0,'partial':1,'error':2,'blocked':3}
+    for report in output['searches']:
+        key=report['source'];current=health.get(key)
+        if not current or priority[report['status']]>priority[current['status']]:health[key]={'source':key,'name':NAMES[key],'status':report['status'],'checkedAt':now}
+    output['sourceHealth']=list(health.values())
     return output, state, bool(failed)
 
 
@@ -286,7 +325,7 @@ def main():
     config=read_json(args.config)
     details_path, map_path=ROOT/'state/details.json',ROOT/'state/rail-map.json'
     details=read_json(details_path,{})
-    screen=None
+    screen=None;boundary=None
     map_warning=None
     if config.get('railway',{}).get('enabled'):
         data=read_json(map_path)
@@ -300,7 +339,14 @@ def main():
             print(f'Map refresh: {type(error).__name__}',file=sys.stderr)
         if data and data.get('bbox')==config['railway']['mapBbox']:
             screen=RailScreen(data,config['radius'],config['railway'])
-    output, state, failed = collect(config, read_json(state_path, {"schemaVersion": 1, "properties": {}, "searches": {}}), read_json(feed_path, {}), details=details,rail_screen=screen)
+            if config.get('southOf'):boundary=SouthBoundary(data,config['southOf'])
+    identity_path=ROOT/'state/identities.json';identities=read_json(identity_path,{})
+    try:
+        output, state, failed = collect(config, read_json(state_path, {"schemaVersion": 1, "properties": {}, "searches": {}}), read_json(feed_path, {}), details=details,rail_screen=screen,boundary=boundary,identities=identities)
+    finally:
+        # Preserve successful detail reads even if a later processing step fails.
+        write_json(details_path,details)
+    write_json(identity_path,identities)
     if map_warning:
         output['warnings'].append(map_warning)
         output['status']='partial'
