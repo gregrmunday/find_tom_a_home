@@ -1,11 +1,18 @@
 {
-  "enabled": false,
-  "title": "Your London search",
-  "summary": "Your requirements will appear here once we set up your search.",
+  "enabled": true,
+  "title": "Denmark Hill rentals",
+  "summary": "Within 1 mile of Denmark Hill Station · 1 bed up to £2,000 (target £1,800) · 2 beds up to £2,100 · floor plan required · no shares, student accommodation or retirement homes",
   "intervalMinutes": 60,
   "retentionDays": 90,
   "maxPagesPerSearch": 8,
-  "searches": [],
+  "searches": [
+    {"id":"denmark-one-bed","name":"1 bed · target £1,800","url":"https://www.rightmove.co.uk/property-to-rent/find.html?locationIdentifier=STATION%5E2714&radius=1.0&minBedrooms=1&maxBedrooms=1&maxPrice=2000&includeLetAgreed=false&sortType=6","filters":{"minBedrooms":1,"maxBedrooms":1,"maxPrice":2000}},
+    {"id":"denmark-two-bed","name":"2 beds · max £2,100","url":"https://www.rightmove.co.uk/property-to-rent/find.html?locationIdentifier=STATION%5E2714&radius=1.0&minBedrooms=2&maxBedrooms=2&maxPrice=2100&includeLetAgreed=false&sortType=6","filters":{"minBedrooms":2,"maxBedrooms":2,"maxPrice":2100}}
+  ],
+  "radius": {"name":"Denmark Hill Station","lat":51.46829,"lng":-0.0895,"miles":1.0,"source":"Rightmove STATION^2714 centre"},
+  "railway": {"enabled":true,"mode":"street","trackBufferMetres":50,"minimumParallelLengthMetres":50,"stationMinimumMiles":0.1,"mapBbox":[-0.114,51.453,-0.065,51.4835]},
+  "ranking": {"oneBedTarget":1800,"oneBedMaximum":2000,"twoBedMaximum":2100},
+  "enrichment": {"enabled":true,"cacheHours":24,"maxRequestsPerRun":80},
   "filters": {
     "minPrice": null,
     "maxPrice": null,
@@ -18,6 +25,10 @@
     "excludeAuction": false,
     "excludeSharedOwnership": false,
     "excludeUnderOffer": true,
-    "bounds": null
+    "bounds": null,
+    "requireFloorplan": true,
+    "excludeStudentAccommodation": true,
+    "excludeShares": true,
+    "excludeRetirement": true
   }
 }

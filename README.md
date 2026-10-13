@@ -1,55 +1,58 @@
 # Find Tom a Home
 
-A small London property radar at **https://gregrmunday.github.io/find_tom_a_home/**.
+A small rental radar at **https://gregrmunday.github.io/find_tom_a_home/**.
 
-Plain HTML, CSS and JavaScript; Leaflet for the map; a Python standard-library collector; GitHub Actions for checks and GitHub Pages for hosting. No build system, application server, database, paid API or package installation. The website never makes requests to Rightmove itself.
+Plain HTML, CSS and JavaScript, Leaflet for the map, Python standard library for collection, GitHub Actions for hourly checks and GitHub Pages for hosting. No build system, application server, database, paid API or package installation. The website only reads the published JSON feed; it never requests Rightmove pages.
 
-## Current state
+## Configured criteria
 
-The draft is ready for search requirements. Collection is disabled in `config/searches.json`, with no assumptions about budget, buying versus renting, bedrooms or areas. The page includes an explicitly labelled, optional fictional example view. The scheduled workflow runs at minute 17 each hour and publishes a status feed; enabling saved searches activates real collection.
+- Within exactly 1 mile of Denmark Hill Station, London (Rightmove `STATION^2714`). Use Rightmove's unrounded station distance where present, otherwise great-circle distance from its station map point (51.46829, -0.0895). One mile is 1609.344 metres. This is straight-line distance, not walking distance.
+- Exactly one bedroom up to £2,000 pcm, with £1,800 or less preferred; exactly two bedrooms up to £2,100 pcm.
+- A floor plan must be present in the listing's floor-plan section.
+- Exclude student accommodation, flat/house shares, shared kitchens/bathrooms and retirement housing using the property type and full description. A normal self-contained apartment saying students or sharers are welcome is not itself student accommodation or a room share.
+- Station proximity: exclude homes at or within 0.1 miles of a station in Rightmove's nearest-stations information. This is an initial configurable interpretation of adjacency, not a user-specified distance.
+- Railway proximity: exclude listing pins within 50 metres of mapped active tracks, and entire named streets with at least 50 metres running parallel beside tracks within 50 metres. The parallel test avoids excluding a road merely because it crosses a railway. These thresholds are configurable interpretations of adjacency, not a user-specified distance.
+- Approximate pins, uncertain street names and failed detail checks go under **Needs checking**, outside the recommendations and match counts. This is a screening tool, not a guarantee about railway noise or exact property boundaries.
 
-## Set up your search
+`config/searches.json` holds the saved one-bedroom and two-bedroom searches, prices, radius, enrichment and railway settings. Results combine with OR and deduplicate by Rightmove ID. Each source uses newest-first search order, excludes let-agreed results and fetches all accessible pages subject to the configured limit. Price-per-week listings use the advertised PCM amount if present, or annualised weekly rent (weekly × 52 ÷ 12), so ceilings operate on monthly rent.
 
-1. Enter the desired requirements on Rightmove and copy each results page URL. You can use a separate saved search for every combination of area, price and other preferences.
-2. Add entries to `config/searches.json`, each with a unique `id`, a `name`, a `url` and optional per-search `filters`.
-3. Set `enabled` to `true`, update the readable `summary`, and commit. The workflow runs immediately and then approximately hourly.
+## Ranking and welcome summary
 
-For example (illustrative criteria, not the user's preferences):
+The default view and the three welcome recommendations use these tiers, in order:
 
-```json
-{
-  "id": "north-london",
-  "name": "North London",
-  "url": "https://www.rightmove.co.uk/property-for-sale/find.html?locationIdentifier=REGION%5E87490&minBedrooms=3&maxPrice=800000&propertyTypes=terraced&includeSSTC=false",
-  "filters": {"excludeAuction": true, "excludeSharedOwnership": true}
-}
-```
+1. First listed within the last 24 hours.
+2. First listed within the last 72 hours.
+3. Older listings, or an unknown listing date.
 
-Search combinations are combined with **OR** and deduplicated by Rightmove property ID. Global filters apply to each search, with per-search values overriding global values. Numeric bounds, house types, keyword inclusion/exclusion, auction/shared ownership exclusions and optional map bounds are supported. Bounds use `[south, west, north, east]`. Keywords check the address, search summary, key features and tenure; text omitted from the search page cannot be checked. Commutes, exact floor area, garden size and other detailed criteria need a later enrichment step; the current collector does not infer them.
+Within a tier, completed refurbishment/renovation wording receives a boost; fresh decoration or new fittings receives a smaller boost. Being within the £1,800 one-bedroom target and lower rent within the bedroom-specific ceiling also improves ranking. Publication time and distance break ties. An older refurbished listing cannot outrank a match in a fresher tier. Scores are internal weights, not percentages or guarantees of suitability. The interface displays short reasons instead of a numeric score.
 
-The first complete run of a new or changed search establishes its baseline. Existing listings are labelled **Initial match** and appear under **All homes**, rather than falsely appearing as new in the past 24 hours. Later additions are ordered by the time this tracker first found them. `publishedAt` is kept separately: first discovery does not mean a listing was just published. A price change to an existing property does not create a duplicate or a new-home alert. Removed matches disappear only after their search completes successfully; this means that narrowing a search or a listing dropping out of its source result window can also remove it from this tracker.
+Descriptions are read in full, including key features. Badges reflect the advertiser's claims, not an inspection of the property. Planned or required work is not treated as a completed refurbishment. The listing date is separate from the time the tracker discovered it: a first collection does not pretend all existing matches were newly listed, and a price reduction does not reset listing age. Initial matches can appear in the 24-hour summary if the source says they were actually published within 24 hours.
 
-## Reliability and source access
+Views include Best matches, 24 hours, 3 days, Shortlist and Needs checking. The map marks Denmark Hill and draws the 1-mile radius. The shortlist stays in the current browser, including unverified homes explicitly labelled as such. Fictional rental examples are available through the preview toggle and clearly labelled.
 
-Rightmove does not document an open consumer search API. This collector reads embedded JSON from public search HTML using a named user agent, 35-second timeouts and a two-second pause between pages. It stops on access failures, with no proxies, login automation or anti-bot bypass. [Rightmove's terms](https://www.rightmove.co.uk/c/terms-of-use/) restrict scraping and automated access; this integration may be blocked, and authorised data access or a separate feed may be needed for long-term operation. Images are not downloaded or embedded. Rightmove's official [instant alerts](https://faq.rightmove.co.uk/support/solutions/articles/7000048758-how-to-register-for-property-alerts) are an alternative source for immediate notifications, but ingesting them would require an inbox integration that has not been configured.
+## Collection and caching
 
-If a search fails, previously collected listings stay visible with a warning. A page limit also reports incomplete coverage and retains old results; it never silently reports a complete search. Default limit: eight pages per search; narrow the criteria if this is insufficient. Public results and inactive deduplication records are retained for 90 days. Search details and listing metadata are public in this repository and site; credentials should never be placed in the configuration.
+`scripts/collect.py` reads public search-page JSON. `scripts/enrich.py` reads full descriptions, floor-plan counts, availability, pin precision and nearest-station distances from public property HTML. The current property-page format is a flattened JSON reference table; it is decoded as data, without executing page scripts.
 
-[GitHub scheduled workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule) may run late or be dropped during high load. Hourly polling typically adds up to about an hour's detection delay, plus scheduling and publishing delays; it cannot guarantee being first. The page displays check timestamps and an overdue warning after 2.5 hours without a complete successful check. The website reloads its small JSON feed every five minutes while visible. Refresh reloads that feed; it does not trigger a Rightmove request.
+Detail data is cached in `state/details.json` for 24 hours and refreshed sooner when the search's update timestamp changes. At most 80 detail requests are made per run, with a time budget and short pauses; unchecked homes remain under Needs checking. `state/seen.json` retains discovery history and search membership. Full descriptions and these caches are public in this repository, so credentials must never be placed in configuration or state.
 
-There are no outbound notifications yet: this stage provides the webpage and collection infrastructure. A later email or push notification integration can use the same newly discovered IDs. The shortlist is saved only in the current browser. A home dropping out of the active source results is no longer shown in the shortlist, though its saved ID remains locally.
+`scripts/geography.py` screens against a compact local OpenStreetMap extract in `state/rail-map.json`. It indexes rail segments in memory and compares named streets with the mapped tracks. Geometry is reused and refreshed weekly, in four API requests small enough to meet OSM's extract limits. The resulting compact street/rail cache stays outside the published website, keeping page loads small. Map-refresh failure uses cached geometry with a warning; without geometry, properties are held for checking. Map coverage extends beyond the search radius. Map data and derived street information are © OpenStreetMap contributors, available under [ODbL 1.0](https://www.openstreetmap.org/copyright).
 
-## Run locally
+Collection failures preserve the last available results and publish warnings. Page limits and capped source results are reported as incomplete. Only a complete search removes old membership from its source. Inactive discovery records and detail caches expire after 90 days. An unavailable source or an approximate map pin is never silently reported as a fully checked match. Cached results can become stale; the site displays timestamps and an overdue warning after 2.5 hours without a complete successful check.
+
+## Source access and timing
+
+Rightmove has no documented open consumer search API. This collector uses ordinary public HTML requests with a named user agent, timeouts and pauses, without proxies, login automation or anti-bot bypass. [Rightmove's terms](https://www.rightmove.co.uk/c/terms-of-use/) restrict automated access, so collection may be blocked and authorised access or another feed may be needed for long-term operation. No Rightmove images are downloaded or embedded. Floor-plan badges link users to the listing rather than loading its assets.
+
+Hourly checks run at minute 17. [GitHub's scheduler](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule) may run late or miss runs, so detection can take about an hour plus scheduling and publication delays. This cannot guarantee being first. The browser reloads the JSON feed every five minutes while visible; its Refresh button reloads the feed rather than requesting another source check. Outbound email/push alerts have not been configured.
+
+## Local use and publishing
 
 ```sh
 python3 scripts/collect.py
 python3 -m http.server 8000 --directory public
 ```
 
-Then visit http://localhost:8000. No dependency installation is required.
+Open http://localhost:8000. There are no packages to install. A live collection needs network access.
 
-## Deployment
-
-The repository's GitHub Pages source is **GitHub Actions**. `.github/workflows/update-and-deploy.yml` collects, commits only the feed and discovery history, and uploads only `public/`. Updates share a concurrency group so overlapping workflow runs do not race. `[skip ci]` on feed commits avoids recursion. Failed collection still publishes preserved results and warnings, then marks the workflow failed so GitHub can notify the repository owner. State survives runner restarts in `state/seen.json`; new or changed search criteria establish a baseline independently. The hourly status commit also keeps scheduled workflows from becoming inactive after 60 days without repository activity.
-
-Maps use [Leaflet](https://leafletjs.com/) 1.9.4 and [OpenStreetMap](https://www.openstreetmap.org/copyright) tiles with visible attribution and ordinary browser caching. Maps load only the visible viewport and do not prefetch tiles. Fonts and Leaflet use external services; system fonts and property results still work if those services are unavailable.
+The GitHub Pages source is GitHub Actions. `.github/workflows/update-and-deploy.yml` collects, commits the feed and state, and uploads only `public/`. A shared concurrency group serialises runs. Feed commits use `[skip ci]` to avoid recursion. An incomplete collector run still publishes preserved data and warnings, then marks the workflow failed so GitHub can notify the owner. Hourly status commits keep the repository active. Fonts and Leaflet load externally, with fallback fonts and property results available if those services fail.

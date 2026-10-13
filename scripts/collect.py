@@ -16,6 +16,11 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from enrich import fetch_details
+from geography import RailScreen, download_map, miles_between
+from ranking import rank
+from screening import accommodation_allowed, apply_details, geography_allowed
+
 ROOT = Path(__file__).resolve().parents[1]
 USER_AGENT = "FindTomAHome/1.0 (+https://gregrmunday.github.io/find_tom_a_home/)"
 
@@ -36,7 +41,7 @@ def write_json(path, data):
 
 
 def clean(value):
-    return html.unescape(re.sub(r"<[^>]+>", "", str(value or ""))).strip()
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", str(value or "")))).strip()
 
 
 def parse_page(document):
@@ -79,19 +84,33 @@ def normalise(raw):
         lat = lng = None
     features = [clean(f.get("description")) for f in raw.get("keyFeatures", [])]
     tenure = (raw.get("tenure") or {}).get("tenureType", "")
+    frequency = price.get("frequency")
+    amount = price.get("amount")
+    if raw.get("channel") == "RENT" or raw.get("transactionType") == "rent":
+        pcm = next((re.search(r"[£]\s*([\d,]+(?:\.\d+)?)\s*pcm", v.get("displayPrice", ""), re.I) for v in price.get("displayPrices", []) if "pcm" in v.get("displayPrice", "").lower()), None)
+        amount = float(pcm[1].replace(",", "")) if pcm else amount if frequency == "monthly" else round(amount * 52 / 12, 2) if frequency == "weekly" and isinstance(amount, (int, float)) else None
+        frequency = "pcm"
+    update = raw.get("listingUpdate") or {}
     return {
         "id": property_id, "address": clean(raw.get("displayAddress")),
-        "price": price.get("amount"), "priceFrequency": price.get("frequency"),
+        "price": amount, "priceFrequency": frequency,
         "bedrooms": raw.get("bedrooms"), "bathrooms": raw.get("bathrooms"),
         "type": clean(raw.get("propertySubType")), "tenure": clean(tenure).replace("_", " ").title(),
         "lat": lat, "lng": lng, "summary": clean(raw.get("summary")), "features": features,
         "publishedAt": raw.get("firstVisibleDate"),
         "url": f"https://www.rightmove.co.uk/properties/{property_id}",
         "auction": bool(raw.get("auction")), "displayStatus": clean(raw.get("displayStatus")),
+        "floorplanCount": raw.get("numberOfFloorplans", 0), "hasFloorplan": bool(raw.get("numberOfFloorplans")),
+        "sourceUpdatedAt": raw.get("updateDate") or update.get("listingUpdateDate"),
+        "description": "", "pinApproximate": False,
     }
 
 
 def matches(p, filters):
+    if filters.get("requireFloorplan") and not p.get("hasFloorplan"):
+        return False
+    if not accommodation_allowed(p, filters):
+        return False
     for field, lower, upper in [("price", "minPrice", "maxPrice"), ("bedrooms", "minBedrooms", "maxBedrooms")]:
         value = p.get(field)
         if filters.get(lower) is not None and (value is None or value < filters[lower]):
@@ -121,14 +140,15 @@ def matches(p, filters):
     return True
 
 
-def collect(config, state, previous, loader=fetch):
+def collect(config, state, previous, loader=fetch, detail_loader=fetch_details, details=None, rail_screen=None):
     now = stamp()
     output = {
         "schemaVersion": 1, "status": "awaiting_configuration", "checkedAt": now,
         "lastSuccessfulCheckAt": previous.get("lastSuccessfulCheckAt"),
         "intervalMinutes": config.get("intervalMinutes", 60),
         "searchTitle": config.get("title", "Your London search"),
-        "searchSummary": config.get("summary", ""), "searches": [], "warnings": [], "properties": [],
+        "searchSummary": config.get("summary", ""), "searches": [], "warnings": [], "properties": [], "pendingProperties": [],
+        "radius": config.get("radius"), "railwaySettings": config.get("railway"), "ranking": config.get("ranking"),
     }
     if not config.get("enabled") or not config.get("searches"):
         return output, state, False
@@ -139,9 +159,13 @@ def collect(config, state, previous, loader=fetch):
         raise ValueError("Each saved search needs a unique ID")
     failed = 0
     filters = config.get("filters", {})
+    details = details if details is not None else {}
+    requests = 0
+    enrichment_started = time.monotonic()
+    enrichment = config.get("enrichment", {})
     for search in config["searches"]:
         sid, name = search["id"], search["name"]
-        signature = hashlib.sha256(json.dumps([search["url"], filters, search.get("filters", {})], sort_keys=True).encode()).hexdigest()
+        signature = hashlib.sha256(json.dumps([search["url"], filters, search.get("filters", {}), config.get("radius"), config.get("railway")], sort_keys=True).encode()).hexdigest()
         old_search = state["searches"].get(sid, {})
         baseline = old_search.get("signature") != signature
         report = {"id": sid, "name": name, "status": "ok", "checkedAt": now, "url": search["url"]}
@@ -162,8 +186,44 @@ def collect(config, state, previous, loader=fetch):
                 for raw in data["properties"]:
                     source_ids.add(str(raw["id"]))
                     p = normalise(raw)
-                    if matches(p, {**filters, **search.get("filters", {})}):
-                        found[p["id"]] = p
+                    search_filters = {**filters, **search.get("filters", {})}
+                    if not matches(p, search_filters):
+                        continue
+                    centre = config.get("radius")
+                    if centre and p["lat"] is not None and miles_between(centre['lat'],centre['lng'],p['lat'],p['lng'])>centre['miles']+.02:
+                        continue
+                    if enrichment.get('enabled'):
+                        cached = details.get(p['id'])
+                        try:
+                            cache_good = cached and cached.get('sourceUpdatedAt') == p['sourceUpdatedAt'] and (datetime.now(timezone.utc)-datetime.fromisoformat(cached['checkedAt'].replace('Z','+00:00'))).total_seconds()<enrichment.get('cacheHours',24)*3600
+                            if not cache_good:
+                                if requests>=enrichment.get('maxRequestsPerRun',80) or time.monotonic()-enrichment_started>480:
+                                    raise ValueError('Detail request limit reached')
+                                requests+=1
+                                detail=detail_loader(p['id'])
+                                details[p['id']]={'checkedAt':now,'sourceUpdatedAt':p['sourceUpdatedAt'],'data':detail}
+                                cached=details[p['id']]
+                                time.sleep(.5)
+                            if not apply_details(p,cached['data'],clean) or not matches(p,search_filters):
+                                continue
+                            if not p['description']:
+                                raise ValueError('Full description missing')
+                            status,reason=geography_allowed(p,config,rail_screen)
+                            if status=='excluded':
+                                continue
+                            p['verificationStatus']=status
+                            p['verificationReason']=reason
+                        except Exception as error:
+                            p['verificationStatus']='unverified'
+                            p['verificationReason']='Full description or station distances could not be checked'
+                            if report['status']=='ok':
+                                report['status']='partial'
+                                failed+=1
+                                output['warnings'].append(f'{name}: some detail checks failed. Unverified homes are held under Needs checking.')
+                            print(f"Detail {p['id']}: {type(error).__name__}",file=sys.stderr)
+                    else:
+                        p['verificationStatus']='screened'
+                    found[p["id"]] = p
                 nxt = (data.get("pagination") or {}).get("next")
                 if nxt is None or nxt == "" or int(nxt) <= index:
                     complete = True
@@ -210,8 +270,11 @@ def collect(config, state, previous, loader=fetch):
     for p in state["properties"].values():
         sources = {sid: name for sid, name in p.get("sourceIds", {}).items() if sid in ids}
         if sources:
-            output["properties"].append({**{k: v for k, v in p.items() if k != "sourceIds"}, "sourceNames": list(sources.values())})
-    output["properties"].sort(key=lambda p: p["firstSeenAt"], reverse=True)
+            record={**{k: v for k, v in p.items() if k != "sourceIds"}, "sourceNames": list(sources.values())}
+            destination='properties' if p.get('verificationStatus')=='screened' else 'pendingProperties'
+            output[destination].append(record)
+    for group in ['properties','pendingProperties']:
+        output[group].sort(key=lambda p:rank(p,config.get('ranking',{})))
     return output, state, bool(failed)
 
 
@@ -220,7 +283,31 @@ def main():
     parser.add_argument("--config", type=Path, default=ROOT / "config/searches.json")
     args = parser.parse_args()
     state_path, feed_path = ROOT / "state/seen.json", ROOT / "public/data/listings.json"
-    output, state, failed = collect(read_json(args.config), read_json(state_path, {"schemaVersion": 1, "properties": {}, "searches": {}}), read_json(feed_path, {}))
+    config=read_json(args.config)
+    details_path, map_path=ROOT/'state/details.json',ROOT/'state/rail-map.json'
+    details=read_json(details_path,{})
+    screen=None
+    map_warning=None
+    if config.get('railway',{}).get('enabled'):
+        data=read_json(map_path)
+        try:
+            good=data and data.get('bbox')==config['railway']['mapBbox'] and (datetime.now(timezone.utc)-datetime.fromisoformat(data['checkedAt'])).days<7
+            if not good:
+                data=download_map(config['railway']['mapBbox'])
+                write_json(map_path,data)
+        except Exception as error:
+            map_warning='Railway map could not refresh. Cached geometry is used where available; unverified homes are held under Needs checking.'
+            print(f'Map refresh: {type(error).__name__}',file=sys.stderr)
+        if data and data.get('bbox')==config['railway']['mapBbox']:
+            screen=RailScreen(data,config['radius'],config['railway'])
+    output, state, failed = collect(config, read_json(state_path, {"schemaVersion": 1, "properties": {}, "searches": {}}), read_json(feed_path, {}), details=details,rail_screen=screen)
+    if map_warning:
+        output['warnings'].append(map_warning)
+        output['status']='partial'
+        failed=True
+    # Retain only recent detail caches; discovery history has a separate retention period.
+    detail_cutoff=(datetime.now(timezone.utc)-timedelta(days=config.get('retentionDays',90))).isoformat().replace('+00:00','Z')
+    write_json(details_path,{pid:d for pid,d in details.items() if d['checkedAt']>=detail_cutoff})
     write_json(state_path, state)
     write_json(feed_path, output)
     print(f"Status: {output['status']}; {len(output['properties'])} homes; {len(output['warnings'])} warnings")
